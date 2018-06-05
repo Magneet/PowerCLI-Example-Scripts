@@ -106,6 +106,10 @@ function Get-JsonObject {
   }
 }
 
+
+
+
+
 function Get-MapEntry {
   param(
     [Parameter(Mandatory = $true)]
@@ -9989,6 +9993,172 @@ function Reset-HVMachine {
     $services.machine.Machine_ResetMachines($machine.id)
   }
 }
+function Remove-HVMachine(){
+	<#
+	.Synopsis
+	   Remove a Horizon View desktop or desktops.
+	
+	.DESCRIPTION
+	   Deletes a VM or an array of VM's from Horizon. Utilizes an Or query filter to match machine names. 
+
+    .PARAMETER HVServer
+		The Horizon server where the machine to be deleted resides.Parameter is not mandatory, 
+        but if you do not specify the server, than make sure you are connected to a Horizon server 
+        first with connect-hvserver.
+
+	.PARAMETER MachineNames
+	   The name or names of the machine(s) to be deleted. Accepts a single VM or an array of VM names.This is a mandatory parameter. 
+
+	.EXAMPLE
+	   remove-HVMachine -HVServer 'horizonserver123' -MachineNames 'LAX-WIN10-002'
+	   Deletes VM 'LAX-WIN10-002' from HV Server 'horizonserver123'
+
+	.EXAMPLE
+	   remove-HVMachine -HVServer 'horizonserver123' -MachineNames $machines
+	   Deletes VM's contained within an array of machine names from HV Server 'horizonserver123'
+	
+	.NOTES
+		Author                      : Jose Rodriguez
+		Author email                : jrodsguitar@gmail.com
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.1.1
+		PowerCLI Version            : PowerCLI 6.5, PowerCLI 6.5.1
+		PowerShell Version          : 5.0
+	#>
+	
+	  [CmdletBinding(
+	    SupportsShouldProcess = $true,
+		ConfirmImpact = 'High'
+	    )]
+	
+	  param(
+		
+		[Parameter(Mandatory = $true)]
+		[array]
+		$MachineNames,
+			
+		[Parameter(Mandatory = $false)]
+		$HVServer = $null
+	  )
+
+#Connect to HV Server
+$services = Get-ViewAPIService -HVServer $HVServer
+  
+  if ($null -eq $services) {
+	  Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+	  }
+
+#Connect to Query Service
+$queryService = New-Object 'Vmware.Hv.QueryServiceService'
+#QUery Definition
+$queryDefinition = New-Object 'Vmware.Hv.QueryDefinition'
+#Query Filter
+$queryDefinition.queryEntityType = 'MachineNamesView'
+
+#Create Filter Set so we can populate it with QueryFilterEquals data
+[VMware.Hv.queryfilter[]]$filterSet = @()
+foreach($machine in $machineNames){
+
+    #queryfilter values
+    $queryFilterEquals = New-Object VMware.Hv.QueryFilterEquals
+    $queryFilterEquals.memberName = "base.name"
+    $queryFilterEquals.value = "$machine"
+
+    $filterSet += $queryFilterEquals
+
+}
+
+#Or Filter
+$orFilter = New-Object VMware.Hv.QueryFilterOr
+$orFilter.filters = $filterSet
+
+#Set Definition filter to value of $orfilter
+$queryDefinition.filter = $orFilter
+
+#Retrieve query results. Returns all machines to be deleted
+$queryResults = $queryService.QueryService_Query($services,$queryDefinition)
+
+#Assign VM Object to variable
+$deleteThisMachine = $queryResults.Results
+
+#Machine Service
+$machineService = new-object VMware.Hv.MachineService
+
+#Get Machine Service machine object
+$deleteMachine = $machineService.Machine_GetInfos($services,$deleteThisMachine.Id)
+
+#If sessions exist on the machines we are going to delete than force kill those sessions.
+#The deleteMachines method will not work if there are any existing sessions so this step is very important.
+write-host "Attemtping log off of machines"
+
+if($deleteMachine.base.session.id){
+$trys = 0
+
+    do{
+        foreach($session in $deleteMachine.base.session){
+
+        $sessions = $null
+        [VMware.Hv.SessionId[]]$sessions += $session     
+            
+         }
+
+    try{
+
+        write-host "`n"
+        write-host "Attemtping log off of machines"
+        write-host "`n"
+        $logOffSession = new-object 'VMware.Hv.SessionService'
+        $logOffSession.Session_LogoffSessionsForced($services,$sessions)
+
+        #Wait more for Sessions to end
+
+        Start-Sleep -Seconds 5 
+                
+        }
+
+    catch{
+
+        Write-Host "Attempted to Log Off Sessions from below machines but recieved an error. This doesn't usually mean it failed. Typically the session is succesfully logged off but takes some time"
+        write-host "`n"
+        write-host ($deleteMachine.base.Name -join "`n") 
+
+        start-sleep -seconds 5
+                   
+    }
+          
+     if(($trys -le 10)){
+        
+        write-host "`n"
+        write-host "Retrying Logoffs: $trys times"
+        #Recheck existing sessions
+        $deleteMachine = $machineService.Machine_GetInfos($services,$deleteThisMachine.Id)
+           
+        }
+              
+     $trys++
+
+    }
+
+    until((!$deleteMachine.base.session.id) -or ($trys -gt 10))
+ 
+}
+
+#Create delete spec for the DeleteMachines method
+$deleteSpec = [VMware.Hv.MachineDeleteSpec]::new()
+$deleteSpec.DeleteFromDisk = $true
+$deleteSpec.ArchivePersistentDisk = $false
+        
+#Delete the machines
+write-host "Attempting to Delete:" 
+Write-Output ($deleteMachine.base.Name -join "`n")
+$bye = $machineService.Machine_DeleteMachines($services,$deleteMachine.id,$deleteSpec)
+
+[System.gc]::collect()
+ 
+}        
 
 function get-hvhealth {
 	<#
@@ -10042,8 +10212,7 @@ function get-hvhealth {
 		[Parameter(Mandatory = $false)]
 		$HvServer = $null
 	  )
-
-		
+	
   $services = Get-ViewAPIService -hvServer $hvServer
     if ($null -eq $services) {
 	    Write-Error "Could not retrieve ViewApi services from connection object"
@@ -10311,10 +10480,6 @@ function register-hvpod {
 	  break
 	}
 		
-	#if ($ADPassword -eq $null) {
-	 	#$ADPassword= Read-Host 'Please provide the Active Directory password for user $AdUsername' -AsSecureString
-	#}
-
 	$temppw = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ADPassword)
   $PlainPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($temppw)
   $plainpassword
@@ -10722,4 +10887,862 @@ function remove-hvsite {
     [System.gc]::collect()
 }
 
-Export-ModuleMember Add-HVDesktop,Add-HVRDSServer,Connect-HVEvent,Disconnect-HVEvent,Get-HVPoolSpec,Get-HVInternalName, Get-HVEvent,Get-HVFarm,Get-HVFarmSummary,Get-HVPool,Get-HVPoolSummary,Get-HVMachine,Get-HVMachineSummary,Get-HVQueryResult,Get-HVQueryFilter,New-HVFarm,New-HVPool,Remove-HVFarm,Remove-HVPool,Set-HVFarm,Set-HVPool,Start-HVFarm,Start-HVPool,New-HVEntitlement,Get-HVEntitlement,Remove-HVEntitlement, Set-HVMachine, New-HVGlobalEntitlement, Remove-HVGlobalEntitlement, Get-HVGlobalEntitlement, Set-HVApplicationIcon, Remove-HVApplicationIcon, Get-HVGlobalSettings, Set-HVGlobalSettings, Set-HVGlobalEntitlement, Get-HVResourceStructure, Get-hvlocalsession, Get-HVGlobalSession, Reset-HVMachine, Get-HVHealth, new-hvpodfederation, remove-hvpodfederation, get-hvpodfederation, register-hvpod, unregister-hvpod, set-hvpodfederation,get-hvsite,new-hvsite,set-hvsite,remove-hvsite
+function new-hvpassword{
+param(
+  [Parameter(Mandatory = $true)]
+    [securestring]
+    $secstrpassword
+    )
+
+	$temppw = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secstrpassword)
+  $PlainPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($temppw)
+  $plainpassword
+	$secPassword = New-Object VMware.Hv.SecureString
+	$enc = [system.Text.Encoding]::UTF8
+	$secPassword.Utf8String = $enc.GetBytes($PlainPassword)
+  return $SecPassword
+   
+}
+
+
+
+function register-hvvirtualcenter {
+	<#
+	.Synopsis
+	   Registers a new vCenter server in a Horizon View Pod
+	
+	.DESCRIPTION
+       Registers a new vCenter server in a Horizon View Pod
+   
+  .PARAMETER Name
+    Name of the site (required)
+
+	.PARAMETER HvServer
+		Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+		first element from global:DefaultHVServers would be considered in-place of hvServer
+	
+	.EXAMPLE
+	   set-hvsite -site "CURRENTSITENAME" -name "NAME" -description "DESCRIPTION"
+	   Returns information about the sites within a Horizon View Pod Federation.
+
+	.NOTES
+		Author                      : Wouter Kursten
+		Author email                : wouter@retouw.nl
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.4
+		PowerCLI Version            : PowerCLI 10.0
+		PowerShell Version          : 5.0
+	#>
+	
+	[CmdletBinding(
+	    SupportsShouldProcess = $false,
+	    ConfirmImpact = 'High'
+	)]
+	
+	param(
+	  [Parameter(Mandatory = $true)]
+	  [String]
+	  $vCenter,
+	  
+	  [Parameter(Mandatory = $true)]
+	  [ValidatePattern("^.+?[@\\].+?$")]
+	  [String]
+    $VCUserName,
+    
+    [Parameter(Mandatory = $false)]
+	  [int]
+	  $VCport=443,
+		
+	  [Parameter(Mandatory = $true)]
+	  [securestring]
+	  $VCpassword,
+    
+    [Parameter(Mandatory = $false)]
+	  [bool]
+    $Usessl=$true,
+    
+    [Parameter(Mandatory = $false)]
+	  [String]
+	  $vcdescription,
+
+	  [Parameter(Mandatory = $false)]
+	  $HvServer = $null
+	)
+		
+    $services = Get-ViewAPIService -hvServer $hvServer
+    if ($null -eq $services) {
+	    Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+  }
+  #Required objects
+  $spec=new-object VMware.Hv.VirtualCenterSpec
+  $spec.serverspec=new-object vmware.hv.serverspec
+  $spec.viewComposerData=new-object VMware.Hv.virtualcenterViewComposerData
+
+  $spec.Certificateoverride=new-object vmware.hv.CertificateThumbprint
+  $spec.limits=new-object VMware.Hv.VirtualCenterConcurrentOperationLimits
+  $spec.storageAcceleratorData=new-object VMware.Hv.virtualcenterStorageAcceleratorData
+
+  
+  # vCenter Server specs
+  $temppw = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($VCpassword)
+  $PlainvcPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($temppw)
+  $vcencPassword = New-Object VMware.Hv.SecureString
+  $enc = [system.Text.Encoding]::UTF8
+  $vcencPassword.Utf8String = $enc.GetBytes($PlainvcPassword)
+
+  $spec.ServerSpec.servername=$vCenter
+  $spec.ServerSpec.port=$VCport
+  $spec.ServerSpec.usessl=$usessl
+  $spec.ServerSpec.username=$VCUserName
+  
+  $spec.ServerSpec.password=$vcencPassword
+  $spec.ServerSpec.servertype="VIRTUAL_CENTER"
+
+  # Description & Displayname, neither is required to be set
+
+  #if ($vcdescription){
+    #$spec.description=$vcdescription
+    #}
+  #if ($vcdisplayname){
+    #$spec.displayname="virtualcenterdisplayname" # Not Required
+  #}
+
+  $spec.CertificateOverride=($services.Certificate.Certificate_Validate($spec.serverspec)).thumbprint
+
+
+# Limits
+# Only change when you want to change the default values. It is required to set these in the spec
+
+$spec.limits.vcProvisioningLimit=20
+$spec.Limits.VcPowerOperationsLimit=50
+$spec.limits.ViewComposerProvisioningLimit=12
+$spec.Limits.ViewComposerMaintenanceLimit=20
+$spec.Limits.InstantCloneEngineProvisioningLimit=20
+
+# Storage Accelerator data
+
+$spec.StorageAcceleratorData.enabled=$false
+#$spec.StorageAcceleratorData.DefaultCacheSizeMB=1024   # Not Required
+
+# Cmposer
+# most can be left empty but they need to be set otherwise you'll get a xml error
+
+$spec.ViewComposerData.viewcomposertype="DISABLED"  # DISABLED for none, LOCAL_TO_VC for installed with the vcenter and STANDALONE for s standalone composer
+
+
+if ($spec.ViewComposerData.viewcomposertype -ne "DISABLED"){
+  $spec.ViewComposerData.ServerSpec=new-object vmware.hv.serverspec
+  $spec.ViewComposerData.CertificateOverride=new-object VMware.hv.CertificateThumbprint
+  $cmppassword=read-host "Composer user password?" -assecurestring
+  $temppw = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($cmpPassword)
+  $PlaincmpPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($temppw)
+  $cmpencPassword = New-Object VMware.Hv.SecureString
+  $enc = [system.Text.Encoding]::UTF8
+  $cmpencPassword.Utf8String = $enc.GetBytes($PlainvcPassword)
+  $spec.ViewComposerData.ServerSpec.password=$cmpencPassword
+#$spec.ViewComposerData.ServerSpec.servername="pod2cmp1.magneet.lab"
+#$spec.ViewComposerData.ServerSpec.port=18443
+#$spec.ViewComposerData.ServerSpec.usessl=$true
+#$spec.ViewComposerData.ServerSpec.username="m_wouter@magneet.lab"
+#$spec.ViewComposerData.ServerSpec.servertype="VIEW_COMPOSER"
+  $spec.ViewComposerData.CertificateOverride=($services.Certificate.Certificate_Validate($spec.ViewComposerData.ServerSpec)).thumbprint  
+}
+
+# Disk reclamation, this is required to be set to either $false or $true
+$spec.SeSparseReclamationEnabled=$false 
+
+# This will create the connection
+
+$services.VirtualCenter.VirtualCenter_Create($spec)
+
+}
+
+function set-hveventdatabase {
+	<#
+	.Synopsis
+	   Registers or changes a Horizon View Event database.
+	
+	.DESCRIPTION
+       Registers or changes a Horizon View Event database
+   
+  .PARAMETER ServerName
+    Name of the database server (Required)
+
+  .PARAMETER Databasetype
+    Database type, possible options: MYSQL,SQLSERVER,ORACLE. Defaults to SQLSERVER
+
+  .PARAMETER DatabasePort
+    Port number on the database server to which View will send events. Defaults to 1433. 
+  
+  .PARAMETER Databasename
+    Name of the Database (required)
+
+  .PARAMETER TablePrefix
+    Prefix to use for the Event Databse. Allowed characters are letters, numbers, and the characters @, $, #,  _, and may not be longer than 6 characters.
+
+  .PARAMETER UserName
+    UserName to connect to the database (required)
+
+  .PARAMETER Password
+    Password of the user connecting to the database in Securestring format.
+    Can be created with:  $password = Read-Host 'Domain Password' -AsSecureString
+
+  .PARAMETER eventtime
+    Time to show the events for. Possible options are ONE_WEEK, TWO_WEEKS, THREE_WEEKS, ONE_MONTH,TWO_MONTHS, THREE_MONTHS, SIX_MONTHS
+
+  .PARAMETER EventNewTime
+    Time in days to classify events for new. Range 1-3
+
+  
+	.PARAMETER HvServer
+		Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+		first element from global:DefaultHVServers would be considered in-place of hvServer
+	
+	.EXAMPLE
+	   register-hveventdatabase -server SERVER@domain -database DATABASENAME -username USER@domain -password $password
+
+	.NOTES
+		Author                      : Wouter Kursten
+		Author email                : wouter@retouw.nl
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.4
+		PowerCLI Version            : PowerCLI 10
+		PowerShell Version          : 5.0
+	#>
+	
+	[CmdletBinding(
+	    SupportsShouldProcess = $false,
+	    ConfirmImpact = 'High'
+	)]
+	
+	param(
+        [Parameter(Mandatory = $true)]
+        [string]
+        $ServerName,
+
+        [Parameter(Mandatory = $false)]
+        [string]
+        $DatabaseType = "SQLSERVER",
+
+        [Parameter(Mandatory = $false)]
+        [int]
+        $DatabasePort = 1433,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $DatabaseName,
+
+        [Parameter(Mandatory = $false)]
+        [string][ValidateLength(1,6)]
+        $TablePrefix,
+
+        [Parameter(Mandatory = $true)]
+       
+      [String]
+      $UserName,
+      
+      [Parameter(Mandatory = $true)]
+      [securestring]
+      $password,
+
+      [Parameter(Mandatory = $false)]
+      [ValidateSet('ONE_WEEK','TWO_WEEKS','THREE_WEEKS','ONE_MONTH','TWO_MONTHS','THREE_MONTHS','SIX_MONTHS')]
+      [string]
+      $eventtime="TWO_WEEKS",
+
+      [Parameter(Mandatory = $false)]
+      [ValidateRange(1,3)]
+      [int]
+      $eventnewtime = 2,
+
+        [Parameter(Mandatory = $false)]
+	    $HvServer = $null
+	)
+
+		
+    $services = Get-ViewAPIService -hvServer $hvServer
+    if ($null -eq $services) {
+	    Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+    }
+    $temppw = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($password)
+  $PlainevdbPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($temppw)
+  $dbupassword = New-Object VMware.Hv.SecureString
+  $enc = [system.Text.Encoding]::UTF8
+  $dbupassword.Utf8String = $enc.GetBytes($PlainevdbPassword)
+
+
+$eventservice=new-object vmware.hv.eventdatabaseservice
+$eventservicehelper=$eventservice.getEventDatabaseInfoHelper()
+$eventsettings=new-object VMware.Hv.EventDatabaseEventSettings
+$eventdatabase=new-object VMware.Hv.EventDatabaseSettings
+$eventsettings.ShowEventsForTime=$eventtime
+$eventsettings.ClassifyEventsAsNewForDays=$eventnewtime
+$eventdatabase.Server=$ServerName
+$eventdatabase.type=$DatabaseType
+$eventdatabase.port=$DatabasePort
+$eventdatabase.name=$DatabaseName
+$eventdatabase.username=$UserName
+if($TablePrefix){
+  $eventdatabase.tablePrefix=$tableprefix
+}
+
+$eventdatabase.password=$dbupassword
+$eventservicehelper.setDatabase($eventdatabase)
+$eventservicehelper.setsettings($eventsettings)
+$eventservice.update($services, $eventservicehelper)
+      
+    [System.gc]::collect()
+}
+
+function set-hvlicense {
+	<#
+	.Synopsis
+	   Sets or changes the license for Horizon View
+	
+	.DESCRIPTION
+    Sets or changes the license for Horizon View
+   
+  .PARAMETER license
+    License key (string)
+
+	.PARAMETER HvServer
+		Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+		first element from global:DefaultHVServers would be considered in-place of hvServer
+	
+	.EXAMPLE
+	   set-hvlicense -license "LICENSE-KEY"
+	   Returns information about the sites within a Horizon View Pod Federation.
+
+	.NOTES
+		Author                      : Wouter Kursten
+		Author email                : wouter@retouw.nl
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.4
+		PowerCLI Version            : PowerCLI 10
+		PowerShell Version          : 5.0
+	#>
+	
+	[CmdletBinding(
+	    SupportsShouldProcess = $false,
+	    ConfirmImpact = 'High'
+	)]
+	
+	param(
+    [Parameter(Mandatory = $true)]
+    [string]
+    $license,
+        
+    [Parameter(Mandatory = $false)]
+	  $HvServer = $null
+	)
+
+		
+  $services = Get-ViewAPIService -hvServer $hvServer
+  if ($null -eq $services) {
+	  Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+  }
+  
+  try {
+	  $services.license.license_set($license)
+  }
+	catch {
+	  write-error $_.exception message
+	  break
+	}
+  $licenseresult=$services.license.license_get()
+  return $licenseresult
+  [System.gc]::collect()
+}
+
+
+function get-hvlicense {
+	<#
+	.Synopsis
+	   Gets the license for Horizon View
+	
+	.DESCRIPTION
+    Gets the license for Horizon View
+   
+  
+	.PARAMETER HvServer
+		Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+		first element from global:DefaultHVServers would be considered in-place of hvServer
+	
+	.EXAMPLE
+	   get-hvlicense
+	   
+
+	.NOTES
+		Author                      : Wouter Kursten
+		Author email                : wouter@retouw.nl
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.4
+		PowerCLI Version            : PowerCLI 10
+		PowerShell Version          : 5.0
+	#>
+	
+	[CmdletBinding(
+	    SupportsShouldProcess = $false,
+	    ConfirmImpact = 'High'
+	)]
+	
+	param(
+    [Parameter(Mandatory = $false)]
+	  $HvServer = $null
+	)
+
+		
+  $services = Get-ViewAPIService -hvServer $hvServer
+  if ($null -eq $services) {
+	  Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+  }
+   
+	$license=$services.license.license_get()
+	return $license
+  [System.gc]::collect()
+}
+
+
+function new-hvinstantcloneadministrator {
+	<#
+	.Synopsis
+	   Registers a new Instant Clone Administrator
+	
+	.DESCRIPTION
+       Registers a new Instant Clone Administrator account that will be used to deploy instant clones
+   
+  .PARAMETER UserName
+    Username for the instant clone administrator (without domain)
+
+    .PARAMETER Domain
+    Domain for the instant clone administrator
+
+      .PARAMETER Password
+    Password of the user connecting to the database in Securestring format.
+    Can be created with:  $password = Read-Host 'Domain Password' -AsSecureString
+
+	.PARAMETER HvServer
+		Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+		first element from global:DefaultHVServers would be considered in-place of hvServer
+	
+	.EXAMPLE
+	   set-hvsite -site "CURRENTSITENAME" -name "NAME" -description "DESCRIPTION"
+	   Returns information about the sites within a Horizon View Pod Federation.
+
+	.NOTES
+		Author                      : Wouter Kursten
+		Author email                : wouter@retouw.nl
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.3.2,7.4
+		PowerCLI Version            : PowerCLI 6.5, PowerCLI 6.5.1
+		PowerShell Version          : 5.0
+	#>
+	
+	[CmdletBinding(
+	    SupportsShouldProcess = $false,
+	    ConfirmImpact = 'High'
+	)]
+	
+	param(
+        
+      [Parameter(Mandatory = $true)]
+      [String]
+      $UserName,
+      
+      [Parameter(Mandatory = $true)]
+      [securestring]
+      $password,
+        
+      [Parameter(Mandatory = $true)]
+      [String]
+      $domain,
+
+        [Parameter(Mandatory = $false)]
+	    $HvServer = $null
+	)
+
+		
+    $services = Get-ViewAPIService -hvServer $hvServer
+    if ($null -eq $services) {
+	    Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+    }
+    $temppw = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($password)
+    $PlainicaPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($temppw)
+    $icadminPassword = New-Object VMware.Hv.SecureString
+    $enc = [system.Text.Encoding]::UTF8
+    $icadminPassword.Utf8String = $enc.GetBytes($PlainicaPassword)
+    $spec=new-object vmware.hv.InstantCloneEngineDomainAdministratorSpec
+    $spec.base=new-object vmware.hv.InstantCloneEngineDomainAdministratorBase
+    $spec.base.domain=(($services.ADDomain.addomain_list() | where {$_.DnsName -eq $domain} | select-object -first 1).id)
+    $spec.base.username=$username
+    $spec.base.password=$icadminpassword
+    $services.InstantCloneEngineDomainAdministrator.InstantCloneEngineDomainAdministrator_Create($spec)
+      
+    [System.gc]::collect()
+}
+
+
+function New-HVRole {
+	<#
+	.Synopsis
+	   Creates a new role for the Horizon View Admin & Help Desk consoles
+	
+	.DESCRIPTION
+    Creates a new role (privilege set) for the Horizon View Admin & Help Desk consoles
+
+   .PARAMETER Name
+        Name of the new role (Required)
+        
+        .PARAMETER Description
+        Description of the new role (Required)
+
+    .PARAMETER Privileges
+        Array of priviliges to give to the role. (Required)
+        Below is an overview of the privileges as seen in the admin console in the first column with the corresponding name(s) in the API in the second column.
+
+Manage Help Desk (Read only)                        HELPDESK_ADMINISTRATOR_VIEW
+Manage global sessions                              FEDERATED_SESSIONS_MANAGE
+Console interaction                                 GLOBAL_ADMIN_UI_INTERACTIVE
+Direct Interaction (Powershell, SDK)                GLOBAL_ADMIN_SDK_INTERACTIVE
+Register Agent                                      GLOBAL_MACHINE_REGISTER
+Manage roles and permissions                        GLOBAL_ROLE_PERMISSION_MANAGEMENT
+Manage Global Configuration and Policies	        GLOBAL_CONFIG_MANAGEMENT
+Manage Farms And Desktops And Application Pools	    POOL_MANAGEMENT,GLOBAL_CONFIG_MANAGEMENT
+Enable farms and desktop pools                      POOL_ENABLE
+Entitle desktop and application pools	            POOL_ENTITLE
+Manage Composer Desktop Pool Image	                POOL_SVI_IMAGE_MANAGEMENT
+Manage Machine	                                    MACHINE_MANAGEMENT
+Manage reboot operations	                        MACHINE_REBOOT
+Manage sessions	                                    MACHINE_MANAGE_VDI_SESSION
+Manage persistent disks                             UDD_MANAGEMENT
+Manage remote processes and applications            MANAGE_REMOTE_PROCESS
+Remote assistance                                   REMOTE_ASSISTANCE
+
+       
+	.PARAMETER HvServer
+		Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+		first element from global:DefaultHVServers would be considered in-place of hvServer
+	
+	.EXAMPLE
+	   New-HVRole -name RoleName -privileges Manage-Pools,Manage_Machine
+	   
+
+	.NOTES
+		Author                      : Wouter Kursten
+		Author email                : wouter@retouw.nl
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.4
+		PowerCLI Version            : PowerCLI 10
+		PowerShell Version          : 5.0
+	#>
+	
+	[CmdletBinding(
+	    SupportsShouldProcess = $false,
+	    ConfirmImpact = 'High'
+	)]
+	
+    param(
+        
+        [Parameter(Mandatory = $true)]
+        [String]
+        $Name,
+      
+      [Parameter(Mandatory = $true)]
+      [String]
+      $Description,
+
+      [Parameter(Mandatory = $false)]
+      [ValidateSet('HELPDESK_ADMINISTRATOR_VIEW','FEDERATED_SESSIONS_MANAGE','GLOBAL_ADMIN_UI_INTERACTIVE','GLOBAL_ADMIN_SDK_INTERACTIVE','GLOBAL_MACHINE_REGISTER','GLOBAL_ROLE_PERMISSION_MANAGEMENT','GLOBAL_CONFIG_MANAGEMENT','POOL_MANAGEMENT,GLOBAL_CONFIG_MANAGEMENT','POOL_ENABLE','POOL_ENTITLE','POOL_SVI_IMAGE_MANAGEMENT','MACHINE_MANAGEMENT','MACHINE_REBOOT','MACHINE_MANAGE_VDI_SESSION','UDD_MANAGEMENT','MANAGE_REMOTE_PROCESS','REMOTE_ASSISTANCE')]
+      [String[]]
+      $Privileges,
+        
+        [Parameter(Mandatory = $false)]
+	    $HvServer = $null
+	)
+		
+  $services = Get-ViewAPIService -hvServer $hvServer
+  if ($null -eq $services) {
+	  Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+  }
+   
+    $rolebase=new-object vmware.hv.rolebase
+    $rolebase.name=$name
+    $rolebase.Description=$Description
+    Foreach ($privilege in $Privileges){
+        $rolebase.privileges+=$privilege
+    
+    }
+    $services.role.role_create($rolebase)
+  [System.gc]::collect()
+}
+
+
+function Get-HVrole {
+	<#
+	.Synopsis
+	   Gets the roles and privileges for the Horizon View Admin & Helpdesk consoles
+	
+	.DESCRIPTION
+    Gets the roles and privileges for the Horizon View admin & helpdesk console
+    This function will show more priveleges then can be set using set- or new-hvrole. 
+    This is because most functions are inherited from a select group of functions. 
+    Below is an overview of the functions as seen in the admin console with the corresponding features in the API.
+    
+Manage Help Desk (Read only)                        HELPDESK_ADMINISTRATOR_VIEW
+Manage global sessions                              FEDERATED_SESSIONS_MANAGE
+Console interaction                                 GLOBAL_ADMIN_UI_INTERACTIVE
+Direct Interaction (Powershell, SDK)                GLOBAL_ADMIN_SDK_INTERACTIVE
+Register Agent                                      GLOBAL_MACHINE_REGISTER
+Manage roles and permissions                        GLOBAL_ROLE_PERMISSION_MANAGEMENT
+Manage Global Configuration and Policies	        GLOBAL_CONFIG_MANAGEMENT
+Manage Farms And Desktops And Application Pools	    POOL_MANAGEMENT,GLOBAL_CONFIG_MANAGEMENT
+Enable farms and desktop pools                      POOL_ENABLE
+Entitle desktop and application pools	            POOL_ENTITLE
+Manage Composer Desktop Pool Image	                POOL_SVI_IMAGE_MANAGEMENT
+Manage Machine	                                    MACHINE_MANAGEMENT
+Manage reboot operations	                        MACHINE_REBOOT
+Manage sessions	                                    MACHINE_MANAGE_VDI_SESSION
+Manage persistent disks                             UDD_MANAGEMENT
+Manage remote processes and applications            MANAGE_REMOTE_PROCESS
+Remote assistance                                   REMOTE_ASSISTANCE
+   
+  
+	.PARAMETER HvServer
+		Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+		first element from global:DefaultHVServers would be considered in-place of hvServer
+	
+	.EXAMPLE
+	   get-hvrole show default information. With (get-hvrole).base | fl you will see everything
+	   
+
+	.NOTES
+		Author                      : Wouter Kursten
+		Author email                : wouter@retouw.nl
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.4
+		PowerCLI Version            : PowerCLI 10
+		PowerShell Version          : 5.0
+	#>
+	
+	[CmdletBinding(
+	    SupportsShouldProcess = $false,
+	    ConfirmImpact = 'High'
+	)]
+	
+	param(
+    [Parameter(Mandatory = $false)]
+	  $HvServer = $null
+	)
+
+		
+  $services = Get-ViewAPIService -hvServer $hvServer
+  if ($null -eq $services) {
+	  Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+  }
+   
+	$roles=$services.role.role_list()
+	return $roles
+  [System.gc]::collect()
+}
+
+function Get-HVpermission {
+	<#
+	.Synopsis
+	   Gets the assigned roles (permissions) for the Horizon View admin & Helpdesk console
+	
+	.DESCRIPTION
+    Gets the assigned roles (permissions) for the Horizon View admin & Helpdesk console. 
+    This function will show more permissions then can be set using set- or new-hvrole. 
+    This is because most functions are inherited from a select group of functions. 
+    Below is an overview of the functions as seen in the admin console with the corresponding features in the API.
+    
+Manage Help Desk (Read only)                        HELPDESK_ADMINISTRATOR_VIEW
+Manage global sessions                              FEDERATED_SESSIONS_MANAGE
+Console interaction                                 GLOBAL_ADMIN_UI_INTERACTIVE
+Direct Interaction (Powershell, SDK)                GLOBAL_ADMIN_SDK_INTERACTIVE
+Register Agent                                      GLOBAL_MACHINE_REGISTER
+Manage roles and permissions                        GLOBAL_ROLE_PERMISSION_MANAGEMENT
+Manage Global Configuration and Policies	        GLOBAL_CONFIG_MANAGEMENT
+Manage Farms And Desktops And Application Pools	    POOL_MANAGEMENT,"GLOBAL_CONFIG_MANAGEMENT"
+enable farms and desktop pools                      POOL_ENABLE
+entitle desktop and application pools	            POOL_ENTITLE
+Manage Composer Desktop Pool Image	                POOL_SVI_IMAGE_MANAGEMENT
+Manage Machine	                                    MACHINE_MANAGEMENT
+Manage reboot operations	                        MACHINE_REBOOT
+Manage sessions	                                    MACHINE_MANAGE_VDI_SESSION
+manage persistent disks                             UDD_MANAGEMENT
+manage remote processes and applications            MANAGE_REMOTE_PROCESS
+remote assistance                                   REMOTE_ASSISTANCE
+   
+  
+	.PARAMETER HvServer
+		Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+		first element from global:DefaultHVServers would be considered in-place of hvServer
+	
+	.EXAMPLE
+	   get-hvpermission
+	   
+
+	.NOTES
+		Author                      : Wouter Kursten
+		Author email                : wouter@retouw.nl
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.4
+		PowerCLI Version            : PowerCLI 10
+		PowerShell Version          : 5.0
+	#>
+	
+	[CmdletBinding(
+	    SupportsShouldProcess = $false,
+	    ConfirmImpact = 'High'
+	)]
+	
+	param(
+    [Parameter(Mandatory = $false)]
+	  $HvServer = $null
+	)
+
+		
+  $services = Get-ViewAPIService -hvServer $hvServer
+  if ($null -eq $services) {
+	  Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+  }
+   
+  $permissionlist=$services.permission.permission_list()
+
+  $permissionoverview=@()
+  
+  foreach ($permission in $permissionlist){
+      $permissionoverview+=New-Object PSObject -Property @{"id" = ($permission).id;
+      "UserorGroup" = ($services.AdminUserOrGroup.AdminUserOrGroup_Get($permission.base.UserOrGroup)).base.displayname;
+      "Role" = ($services.role.role_get($permission.base.role)).base.name;
+      "AccessGroup" = ($Services.AccessGroup.AccessGroup_Get($permission.base.accessgroup)).base.name;
+      
+      
+  } | select-object id,UserOrGroup,role,accessgroup
+  
+  
+  
+  }
+  return $permissionoverview 
+  [System.gc]::collect()
+}
+
+
+
+function New-HVPermission {
+	<#
+	.Synopsis
+	   Gets the license for Horizon View
+	
+	.DESCRIPTION
+    Gets the license for Horizon View
+   
+  
+	.PARAMETER HvServer
+		Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+		first element from global:DefaultHVServers would be considered in-place of hvServer
+	
+	.EXAMPLE
+	   New-HVPermission
+	   
+
+	.NOTES
+		Author                      : Wouter Kursten
+		Author email                : wouter@retouw.nl
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.4
+		PowerCLI Version            : PowerCLI 10
+		PowerShell Version          : 5.0
+	#>
+	
+	[CmdletBinding(
+	    SupportsShouldProcess = $false,
+	    ConfirmImpact = 'High'
+	)]
+	
+	param(
+        
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern("^.+?[@\\].+?$")]
+        [String]
+        $Group,
+      
+      [Parameter(Mandatory = $true)]
+      [String]
+      $Role,
+
+      [Parameter(Mandatory = $false)]
+      [String]
+      $Accessgroup = "root",
+        
+        [Parameter(Mandatory = $false)]
+	    $HvServer = $null
+	)
+
+		
+  begin {$services = Get-ViewAPIService -hvServer $hvServer
+  if ($null -eq $services) {
+	  Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+  }
+  
+}
+process {
+    $confirmFlag = Get-HVConfirmFlag -keys $PsBoundParameters.Keys
+    $groupinfo = Get-UserInfo -UserName $Group
+    
+    $UserOrGroupName = $groupinfo.Name
+    $Domain = $groupinfo.Domain
+    $filter1 = Get-HVQueryFilter 'base.name' -Eq $UserOrGroupName
+    $filter2 = Get-HVQueryFilter 'base.domain' -Eq $Domain
+    $filter3 = Get-HVQueryFilter 'base.group' -Eq $true
+    $andFilter = Get-HVQueryFilter -And -Filters @($filter1, $filter2, $filter3)
+    $results = Get-HVQueryResult -EntityType ADUserOrGroupSummaryView -Filter $andFilter -HvServer $HvServer
+    
+    if ($results.length -ne 1) {
+      Write-host "Unable to find specific group with given search parameters"
+      break
+    }
+    $permissionbase=new-object vmware.hv.permissionbase
+    $permissionbase.role=($services.role.role_list() | where {$_.base.name -eq $Role}).id
+    $permissionbase.AccessGroup=($services.AccessGroup.AccessGroup_List() | where {$_.base.name -eq $Accessgroup}).id
+    $permissionbase.UserOrGroup=($results).id
+    $results=$Services.Permission.Permission_Create($permissionbase)
+    $results
+}
+}
+
+
+
+
+
+
+
+Export-ModuleMember Add-HVDesktop,Add-HVRDSServer,Connect-HVEvent,Disconnect-HVEvent,Get-HVPoolSpec,Get-HVInternalName, Get-HVEvent,Get-HVFarm,Get-HVFarmSummary,Get-HVPool,Get-HVPoolSummary,Get-HVMachine,Get-HVMachineSummary,Get-HVQueryResult,Get-HVQueryFilter,New-HVFarm,New-HVPool,Remove-HVFarm,Remove-HVPool,Set-HVFarm,Set-HVPool,Start-HVFarm,Start-HVPool,New-HVEntitlement,Get-HVEntitlement,Remove-HVEntitlement, Set-HVMachine, New-HVGlobalEntitlement, Remove-HVGlobalEntitlement, Get-HVGlobalEntitlement, Set-HVApplicationIcon, Remove-HVApplicationIcon, Get-HVGlobalSettings, Set-HVGlobalSettings, Set-HVGlobalEntitlement, Get-HVResourceStructure, Get-hvlocalsession, Get-HVGlobalSession, Reset-HVMachine, Remove-HVMachine, Get-HVHealth, new-hvpodfederation, remove-hvpodfederation, get-hvpodfederation, register-hvpod, unregister-hvpod, set-hvpodfederation,get-hvsite,new-hvsite,set-hvsite,remove-hvsite, register-hvvirtualcenter, set-hveventdatabase, set-hvlicense, get-hvlicense, new-hvinstantcloneadministrator,New-HVRole,Get-HVRole,Get-HVpermission, New-HVPermission
