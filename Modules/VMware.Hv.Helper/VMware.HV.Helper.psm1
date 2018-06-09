@@ -10482,8 +10482,7 @@ function register-hvpod {
 		
 	$temppw = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ADPassword)
   $PlainPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($temppw)
-  $plainpassword
-	$vcPassword = New-Object VMware.Hv.SecureString
+  $vcPassword = New-Object VMware.Hv.SecureString
 	$enc = [system.Text.Encoding]::UTF8
 	$vcPassword.Utf8String = $enc.GetBytes($PlainPassword)
 		
@@ -10686,7 +10685,7 @@ function get-hvsite {
 		Write-Error "Could not retrieve ViewApi services from connection object"
 		break
 	}
-	$hvsites=$services1.site.site_list()
+	$hvsites=$services.site.site_list()
 	return $hvsites
       
   [System.gc]::collect()
@@ -10821,7 +10820,7 @@ function set-hvsite {
 	    Write-Error "Could not retrieve ViewApi services from connection object"
 		break
     }
-    $siteid=$services1.site.site_list() | where-object {$_.base.displayname -like $sitename}
+    $siteid=$services.site.site_list() | where-object {$_.base.displayname -like $sitename}
     $siteservice=new-object vmware.hv.siteservice
     $sitebasehelper=$siteservice.read($services, $siteid.id)
     $sitebasehelper.getbasehelper().setdisplayname($name)
@@ -10881,7 +10880,7 @@ function remove-hvsite {
 	    Write-Error "Could not retrieve ViewApi services from connection object"
 		break
     }
-    $siteid=$services1.site.site_list() | where-object {$_.base.displayname -like $name}
+    $siteid=$services.site.site_list() | where-object {$_.base.displayname -like $name}
     $services.site.site_delete($siteid.id)
       
     [System.gc]::collect()
@@ -11839,6 +11838,147 @@ function Get-HVInstantCloneAdministrator {
   [System.gc]::collect()
 }
 
+function Get-HVPod {
+	<#
+	.Synopsis
+	   Lists the pods with a Cloud Pod Federation in Horizon View
+	
+	.DESCRIPTION
+    Lists the pods with a Cloud Pod Federation in Horizon View
+   
+  
+	.PARAMETER HvServer
+		Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+		first element from global:DefaultHVServers would be considered in-place of hvServer
+	
+	.EXAMPLE
+	   get-HVPod
+	   
+
+	.NOTES
+		Author                      : Wouter Kursten
+		Author email                : wouter@retouw.nl
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.4
+		PowerCLI Version            : PowerCLI 10
+		PowerShell Version          : 5.0
+	#>
+	
+	[CmdletBinding(
+	    SupportsShouldProcess = $false,
+	    ConfirmImpact = 'High'
+	)]
+	
+	param(
+    [Parameter(Mandatory = $false)]
+	  $HvServer = $null
+	)
+
+		
+  $services = Get-ViewAPIService -hvServer $hvServer
+  if ($null -eq $services) {
+	  Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+  }
+   $results=$services.pod.pod_list()
+	
+	return $results
+  [System.gc]::collect()
+}
+
+function Set-HVPod {
+	<#
+	.Synopsis
+	   Changes Pod settings
+	
+	.DESCRIPTION
+    Changes Pod settings
+   
+.PARAMETER NewName
+    The new name for the pod
+
+    .PARAMETER NewDescription
+    New description for the pod
+
+    .PARAMETER NewSite
+    Exact name for the site the pod needs to be moved to
+
+    .PARAMETER HvServer
+		Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+		first element from global:DefaultHVServers would be considered in-place of hvServer
+	
+	.EXAMPLE
+	   get-HVPod -name PODNAME -NewName NEWNAME -Description DESCRIPTION -NewSite "Default First site"
+	   
+
+	.NOTES
+		Author                      : Wouter Kursten
+		Author email                : wouter@retouw.nl
+		Version                     : 1.0
+	
+		===Tested Against Environment====
+		Horizon View Server Version : 7.4
+		PowerCLI Version            : PowerCLI 10
+		PowerShell Version          : 5.0
+	#>
+	
+	[CmdletBinding(
+	    SupportsShouldProcess = $false,
+	    ConfirmImpact = 'High'
+	)]
+	
+	param(
+        
+        [Parameter(Mandatory = $true)]
+        [String]
+        $PodName,
+      
+      [Parameter(Mandatory = $false)]
+      [String]
+      $NewName,
+      
+      [Parameter(Mandatory = $false)]
+      [String]
+      $NewDescription,
+
+      [Parameter(Mandatory = $false)]
+      [String]
+      $NewSiteName,
+
+        
+        [Parameter(Mandatory = $false)]
+	    $HvServer = $null
+	)
+
+		
+  $services = Get-ViewAPIService -hvServer $hvServer
+  if ($null -eq $services) {
+	  Write-Error "Could not retrieve ViewApi services from connection object"
+		break
+  }
+   	
+$podservice =new-object vmware.hv.podservice
+$podid=($services.pod.pod_list() | where-object  {$_.displayname -eq "$podname"} | select-object -first 1).id
+$podhelper=$podservice.read($services, $podid)
+if ($NewName){
+    $podhelper.setDisplayName($NewName)
+}
+elseif($NewDescription){
+    $podhelper.setdescription($NewDescription)
+}
+elseif ($NewSiteName) {
+    $Newsiteid=($services.site.site_list() | where-object  {$_.base.displayname -eq $newsitename} | select-object -first 1).id
+    $podhelper.setsite($Newsiteid)
+}    
+$podservice.update($services, $podhelper)
+
+$results=$services.pod.pod_get($podid)
+	return $results
+  [System.gc]::collect()
+}
 
 
-Export-ModuleMember Add-HVDesktop,Add-HVRDSServer,Connect-HVEvent,Disconnect-HVEvent,Get-HVPoolSpec,Get-HVInternalName, Get-HVEvent,Get-HVFarm,Get-HVFarmSummary,Get-HVPool,Get-HVPoolSummary,Get-HVMachine,Get-HVMachineSummary,Get-HVQueryResult,Get-HVQueryFilter,New-HVFarm,New-HVPool,Remove-HVFarm,Remove-HVPool,Set-HVFarm,Set-HVPool,Start-HVFarm,Start-HVPool,New-HVEntitlement,Get-HVEntitlement,Remove-HVEntitlement, Set-HVMachine, New-HVGlobalEntitlement, Remove-HVGlobalEntitlement, Get-HVGlobalEntitlement, Set-HVApplicationIcon, Remove-HVApplicationIcon, Get-HVGlobalSettings, Set-HVGlobalSettings, Set-HVGlobalEntitlement, Get-HVResourceStructure, Get-hvlocalsession, Get-HVGlobalSession, Reset-HVMachine, Remove-HVMachine, Get-HVHealth, new-hvpodfederation, remove-hvpodfederation, get-hvpodfederation, register-hvpod, unregister-hvpod, set-hvpodfederation,get-hvsite,new-hvsite,set-hvsite,remove-hvsite, register-hvvirtualcenter, set-hveventdatabase, set-hvlicense, get-hvlicense, new-hvinstantcloneadministrator,New-HVRole,Get-HVRole,Get-HVpermission, New-HVPermission, Get-HVVirtualcenter, Get-HVInstantCloneAdministrator
+
+Export-ModuleMember Add-HVDesktop,Add-HVRDSServer,Connect-HVEvent,Disconnect-HVEvent,Get-HVPoolSpec,Get-HVInternalName, Get-HVEvent,Get-HVFarm,Get-HVFarmSummary,Get-HVPool,Get-HVPoolSummary,Get-HVMachine,Get-HVMachineSummary,Get-HVQueryResult,Get-HVQueryFilter,New-HVFarm,New-HVPool,Remove-HVFarm,Remove-HVPool,Set-HVFarm,Set-HVPool,Start-HVFarm,Start-HVPool,New-HVEntitlement,Get-HVEntitlement,Remove-HVEntitlement, Set-HVMachine, New-HVGlobalEntitlement, Remove-HVGlobalEntitlement, Get-HVGlobalEntitlement, Set-HVApplicationIcon, Remove-HVApplicationIcon, Get-HVGlobalSettings, Set-HVGlobalSettings, Set-HVGlobalEntitlement, Get-HVResourceStructure, Get-hvlocalsession, Get-HVGlobalSession, Reset-HVMachine, Remove-HVMachine, Get-HVHealth, new-hvpodfederation, remove-hvpodfederation, get-hvpodfederation, register-hvpod, unregister-hvpod, set-hvpodfederation,get-hvsite,new-hvsite,set-hvsite,remove-hvsite, register-hvvirtualcenter, set-hveventdatabase, set-hvlicense, get-hvlicense, new-hvinstantcloneadministrator,New-HVRole,Get-HVRole,Get-HVpermission, New-HVPermission, Get-HVVirtualcenter, Get-HVInstantCloneAdministrator, Get-HVPod, Set-HVPod
